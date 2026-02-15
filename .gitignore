@@ -1,3 +1,6 @@
+.env
+*.db
+
 # JetBrains IDE-specific files
 .idea/
 *.iml
@@ -18,7 +21,6 @@ __pycache__/
 venv/
 env/
 .venv/
-.env/
 
 # Distribution / packaging
 .Python

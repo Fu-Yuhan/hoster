@@ -5,6 +5,7 @@
 
 import sqlite3, json, math, random
 from datetime import datetime, timedelta
+from typing import Union, Optional
 
 # ═══════════════════ 常量 ═══════════════════
 
@@ -31,7 +32,7 @@ def init_db():
 # 温度/光照 白天高夜间低；湿度与温度反相；CO₂ 夜间略高
 # 四个区域有固定偏移，模拟朝向差异
 
-def _sim(zone: str, s: str, t: datetime | None = None) -> float:
+def _sim(zone: str, s: str, t: Optional[datetime] = None) -> float:
     t = t or datetime.now()
     h = t.hour + t.minute / 60                               # 0‑24 小时（浮点）
     z = {"东北": -2, "西北": -1, "东南": 1, "西南": 2}[zone]  # 区域偏移
@@ -119,7 +120,7 @@ def write_log(operation_type: str, details: str) -> dict:
     return {"status": "success", "message": "日志已写入"}
 
 
-def read_logs(limit: int = 10, operation_type: str | None = None) -> dict:
+def read_logs(limit: int = 10, operation_type: Optional[str] = None) -> dict:
     """查询最近的日志，可按类型筛选"""
     with sqlite3.connect(DB) as c:
         if operation_type:
