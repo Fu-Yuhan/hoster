@@ -21,9 +21,6 @@ MODEL    = os.environ.get("MODEL", "deepseek-chat")
 
 client = OpenAI(api_key=API_KEY, base_url=BASE_URL)
 
-# 工具中文名映射（用于界面提示）
-
-
 SYSTEM = """你是「农智」—— AI 智慧农业助手。
 你管理的农场分为 东北、西北、东南、西南 四个区域，每个区域配有温度、湿度、CO₂、光照传感器。
 
@@ -65,33 +62,57 @@ if "msgs" not in st.session_state:
 # ═══════════════════ 渲染历史消息 ═══════════════════
 
 def render_history():
-    """渲染 st.session_state.msgs 中所有非 system 消息"""
-    for m in st.session_state.msgs:
+    """渲染 st.session_state.msgs 中所有非 system 消息。
+
+    把连续的 tool 消息合并到一个气泡中展示。
+    """
+    msgs = st.session_state.msgs
+    i = 0
+    while i < len(msgs):
+        m = msgs[i]
         role = m["role"]
         content = m.get("content")
 
         if role == "system":
+            i += 1
             continue
 
         elif role == "user":
             st.chat_message("user").write(content)
+            i += 1
 
         elif role == "assistant":
-            # assistant 消息可能只有 tool_calls 没有 content
-            has_tool_calls = bool(m.get("tool_calls"))
             if content:
                 st.chat_message("assistant").write(content)
-            # 如果只有 tool_calls 没有 content，不渲染气泡（工具结果会单独显示）
+            i += 1
 
         elif role == "tool":
-            name = st.session_state.tool_names.get(m.get("tool_call_id"), "工具")
-            display = TOOL_DISPLAY_NAMES.get(name, f"🔧 {name}")
+            # 收集连续的 tool 消息
+            tool_msgs = []
+            while i < len(msgs) and msgs[i]["role"] == "tool":
+                tool_msgs.append(msgs[i])
+                i += 1
+
+            # 合并到一个气泡
             with st.chat_message("assistant", avatar="🔧"):
-                with st.expander(f"{display} — 返回结果", expanded=False):
-                    try:
-                        st.json(json.loads(content))
-                    except Exception:
-                        st.code(content)
+                tool_names_list = []
+                for tm in tool_msgs:
+                    name = st.session_state.tool_names.get(tm.get("tool_call_id"), "工具")
+                    tool_names_list.append(TOOL_DISPLAY_NAMES.get(name, f"🔧 {name}"))
+
+                summary = "、".join(tool_names_list)
+                with st.expander(f"🔧 工具调用结果（{summary}）", expanded=False):
+                    for tm in tool_msgs:
+                        name = st.session_state.tool_names.get(tm.get("tool_call_id"), "工具")
+                        display = TOOL_DISPLAY_NAMES.get(name, f"🔧 {name}")
+                        st.markdown(f"**{display}**")
+                        try:
+                            st.json(json.loads(tm["content"]))
+                        except Exception:
+                            st.code(tm["content"])
+                        st.divider()
+        else:
+            i += 1
 
 
 render_history()
@@ -126,7 +147,6 @@ if prompt := st.chat_input("请输入您的问题…"):
         full_content = ""
         tool_calls_dict = {}
 
-        # 只在有文本内容时才创建气泡
         text_bubble = None
         text_placeholder = None
 
@@ -139,7 +159,6 @@ if prompt := st.chat_input("请输入您的问题…"):
             if delta is None:
                 continue
 
-            # 流式文本：首次出现文本时创建气泡
             if delta.content:
                 full_content += delta.content
                 if text_bubble is None:
@@ -147,7 +166,6 @@ if prompt := st.chat_input("请输入您的问题…"):
                     text_placeholder = text_bubble.empty()
                 text_placeholder.markdown(full_content + "▌")
 
-            # 工具调用分片
             if delta.tool_calls:
                 for tc_chunk in delta.tool_calls:
                     idx = tc_chunk.index
@@ -164,7 +182,6 @@ if prompt := st.chat_input("请输入您的问题…"):
                     if tc_chunk.function and tc_chunk.function.arguments:
                         tool_calls_dict[idx]["arguments"] += tc_chunk.function.arguments
 
-        # ── 流结束：移除光标 ──
         if text_placeholder and full_content:
             text_placeholder.markdown(full_content)
 
@@ -191,43 +208,56 @@ if prompt := st.chat_input("请输入您的问题…"):
         if not tool_calls_list:
             break
 
-        # ── 执行工具调用（每个工具独立气泡） ──
-        for tc in tool_calls_list:
-            fn_name = tc["function"]["name"]
-            fn_args = json.loads(tc["function"]["arguments"])
-            display_name = TOOL_DISPLAY_NAMES.get(fn_name, f"🔧 {fn_name}")
-            args_hint = "、".join(f"{k}={v}" for k, v in fn_args.items())
+        # ── 执行所有工具调用，合并到一个气泡中 ──
+        with st.chat_message("assistant", avatar="🔧"):
+            # 构建摘要标签
+            tool_display_list = []
+            for tc in tool_calls_list:
+                fn_name = tc["function"]["name"]
+                display_name = TOOL_DISPLAY_NAMES.get(fn_name, f"🔧 {fn_name}")
+                tool_display_list.append(display_name)
+            summary_label = "、".join(tool_display_list)
 
-            with st.chat_message("assistant", avatar="🔧"):
-                with st.status(
-                    f"⏳ 正在调用 {display_name}（{args_hint}）…",
-                    expanded=False,
-                    state="running",
-                ) as status_widget:
-                    st.write(f"**函数**: `{fn_name}`")
-                    st.write(f"**参数**:")
+            with st.status(
+                f"⏳ 正在调用工具（{summary_label}）…",
+                expanded=False,
+                state="running",
+            ) as status_widget:
+
+                for i, tc in enumerate(tool_calls_list):
+                    fn_name = tc["function"]["name"]
+                    fn_args = json.loads(tc["function"]["arguments"])
+                    display_name = TOOL_DISPLAY_NAMES.get(fn_name, f"🔧 {fn_name}")
+                    args_hint = "、".join(f"{k}={v}" for k, v in fn_args.items())
+
+                    st.markdown(f"**{display_name}**（{args_hint}）")
+                    st.write("参数:")
                     st.json(fn_args)
 
                     result = call_tool(fn_name, fn_args)
 
-                    status_widget.update(
-                        label=f"✅ {display_name} — 调用完成",
-                        state="complete",
-                        expanded=False,
-                    )
-                    st.write("**返回结果**:")
+                    st.write("返回结果:")
                     try:
                         st.json(json.loads(result))
                     except Exception:
                         st.code(result)
 
-            st.session_state.tool_names[tc["id"]] = fn_name
-            st.session_state.msgs.append({
-                "role": "tool",
-                "tool_call_id": tc["id"],
-                "content": result,
-            })
+                    if i < len(tool_calls_list) - 1:
+                        st.divider()
 
+                    # 记录到会话
+                    st.session_state.tool_names[tc["id"]] = fn_name
+                    st.session_state.msgs.append({
+                        "role": "tool",
+                        "tool_call_id": tc["id"],
+                        "content": result,
+                    })
+
+                status_widget.update(
+                    label=f"✅ 工具调用完成（{summary_label}）",
+                    state="complete",
+                    expanded=False,
+                )
 
         # 继续下一轮
 
